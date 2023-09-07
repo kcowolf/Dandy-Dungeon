@@ -1,43 +1,42 @@
-#include <Windows.h>
-#include <mmsystem.h>
-#include <d3dx9.h>
+#include <algorithm>
+#include <map>
+#include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
+#include <SDL.h>
+#include <SDL_image.h>
+
+#ifndef MAX_PATH
+	#define MAX_PATH 255
+#endif
+
+#define SCREEN_WIDTH 640
+#define SCREEN_HEIGHT 480
 
 //-----------------------------------------------------------------------------
 // Global variables
 //-----------------------------------------------------------------------------
-LPDIRECT3D9             g_pD3D       = NULL; // Used to create the D3DDevice
-LPDIRECT3DDEVICE9       g_pd3dDevice = NULL; // Our rendering device
-LPDIRECT3DVERTEXBUFFER9 g_pVB        = NULL; // Buffer to hold vertices
-LPDIRECT3DTEXTURE9      g_pTexture   = NULL; // Our texture
+static bool gQuit = false;
+static SDL_Window* gWindow = nullptr;
+static SDL_Renderer* gRenderer = nullptr;
+static SDL_Texture* gTexture = nullptr;
 
-// A structure for our custom vertex type. We added texture coordinates
-struct CUSTOMVERTEX
-{
-    float x;
-    float y;
-    float z;
-    float rhw;
-	float    tu;
-	float    tv;
-};
-
-// Our custom FVF, which describes our custom vertex structure
-#define D3DFVF_CUSTOMVERTEX (D3DFVF_XYZRHW | D3DFVF_TEX1)
-
+static bool init();
+static bool loadMedia();
+static void close();
 
 // The game goes here
 
 void MyDebugBreak()
 {
-	DebugBreak();
+	printf("MyDebugBreak hit!\n");
 }
 
 void MyAssert(bool test)
 {
 	if(!test)
 	{
-		DebugBreak();
+		printf("Failed assert!\n");
 	}
 }
 
@@ -82,8 +81,12 @@ enum MapData
 	kPlayer0, // Actually has a "1" on his cheast
 	kPlayer1,
 	kPlayer2,
-	kPlayer3
+	kPlayer3,
+
+	MAP_DATA_COUNT
 };
+
+static SDL_Rect gTileClips[MapData::MAP_DATA_COUNT];
 
 class Map
 {
@@ -93,7 +96,7 @@ public:
 		Init();
 	}
 
-	MapData Get(DWORD x, DWORD y)
+	MapData Get(uint32_t x, uint32_t y)
 	{
 		MapData b = kSpace;
 		if(x >= 0 && x < Width && y >= 0 && y < Height)
@@ -107,7 +110,7 @@ public:
 		return b;
 	}
 
-	MapData Get(DWORD x, DWORD y, Direction dir)
+	MapData Get(uint32_t x, uint32_t y, Direction dir)
 	{
 		MapData b = kSpace;
 		if(x >= 0 && x < Width && y >= 0 && y < Height)
@@ -121,7 +124,7 @@ public:
 		return b;
 	}
 
-	void Set(DWORD x, DWORD y, int v)
+	void Set(uint32_t x, uint32_t y, int v)
 	{
 		if(x >= 0 && x < Width && y >= 0 && y < Height && v <= kPlayer3)
 		{
@@ -133,7 +136,7 @@ public:
 		}
 	}
 
-	bool Find(BYTE& rx, BYTE& ry, MapData v)
+	bool Find(uint8_t& rx, uint8_t& ry, MapData v)
 	{
 		for(int y = 0; y < Height; y++)
 		{
@@ -150,7 +153,7 @@ public:
 		return false;
 	}
 
-	void OpenLock(DWORD x, DWORD y)
+	void OpenLock(uint32_t x, uint32_t y)
 	{
 		// Flood fill from this coord
 		if(Cell[x + y * Width] == kLock)
@@ -165,11 +168,11 @@ public:
 
 	void Init()
 	{
-		for(DWORD y = 0; y < Height; y++)
+		for(uint32_t y = 0; y < Height; y++)
 		{
-			for(DWORD x = 0; x < Width; x++)
+			for(uint32_t x = 0; x < Width; x++)
 			{
-				BYTE b = kSpace;
+				uint8_t b = kSpace;
 				if(y == 0 || y == Height-1 || x == 0 || x == Width - 1)
 				{
 					b = kWall;
@@ -187,7 +190,7 @@ public:
 		}
 	}
 
-	bool LoadLevel(DWORD index)
+	bool LoadLevel(uint32_t index)
 	{
 		char fileName[MAX_PATH];
 		FILE* in;
@@ -211,8 +214,8 @@ public:
 						failed = true;
 						break;
 					}
-					Cell[y*Width+x] = (BYTE) (inb & 0xf);
-					Cell[y*Width+x+1] = (BYTE) ((inb >> 4) & 0xf);
+					Cell[y*Width+x] = (uint8_t) (inb & 0xf);
+					Cell[y*Width+x+1] = (uint8_t) ((inb >> 4) & 0xf);
 				}
 			}
 			fclose(in);
@@ -224,28 +227,28 @@ public:
 		return !failed;
 	}
 
-	void GetActive(float& x, float& y, DWORD& left, DWORD& top, DWORD& right, DWORD& bottom)
+	void GetActive(float& x, float& y, uint32_t& left, uint32_t& top, uint32_t& right, uint32_t& bottom)
 	{
 		GetActive1(x, left, right, Map::Width, Map::ViewWidth);
 		GetActive1(y, top, bottom, Map::Height, Map::ViewHeight);
 	}
 
-	void GetActive1(float& x, DWORD& left, DWORD& right, DWORD width, DWORD viewWidth)
+	void GetActive1(float& x, uint32_t& left, uint32_t& right, uint32_t width, uint32_t viewWidth)
 	{
 		x -= (viewWidth / 2.0f);
-		x = max(x, 0.f);
-		x = min(x, width - viewWidth);
-		left = (DWORD) x;
-		right = min(left + viewWidth + 1, width);
+		x = std::max(x, 0.f);
+		x = std::min(x, (float)(width - viewWidth));
+		left = (uint32_t) x;
+		right = std::min(left + viewWidth + 1, width);
 	}
 
-	const static DWORD Width = 60;
-	const static DWORD Height = 30;
-	const static DWORD NumCells = Width * Height;
-	BYTE Cell[NumCells];
+	const static uint32_t Width = 60;
+	const static uint32_t Height = 30;
+	const static uint32_t NumCells = Width * Height;
+	uint8_t Cell[NumCells];
 
-	const static DWORD ViewWidth = 20;
-	const static DWORD ViewHeight = 10;
+	const static uint32_t ViewWidth = 20;
+	const static uint32_t ViewHeight = 10;
 };
 
 class Arrow
@@ -270,8 +273,8 @@ public:
 	}
 
 	bool alive;
-	BYTE x;
-	BYTE y;
+	uint8_t x;
+	uint8_t y;
 	Direction dir;
 };
 
@@ -323,15 +326,15 @@ public:
 	}
 
 	static const int kHealthMax = 9;
-	BYTE x;
-	BYTE y;
-	BYTE health;
-	BYTE food;
-	BYTE keys;
-	BYTE bombs;
-	DWORD score;
+	uint8_t x;
+	uint8_t y;
+	uint8_t health;
+	uint8_t food;
+	uint8_t keys;
+	uint8_t bombs;
+	uint32_t score;
 	PlayerState state;
-	DWORD lastMoveTime;
+	uint32_t lastMoveTime;
 	Direction dir;
 	Arrow arrow;
 };
@@ -346,8 +349,8 @@ public:
 	void Init()
 	{
 		map.Init();
-		numPlayers = 2;
-		for(DWORD i = 0; i < numPlayers; i++)
+		numPlayers = 1;
+		for(uint32_t i = 0; i < numPlayers; i++)
 		{
 			player[i].Init();
 		}
@@ -355,9 +358,9 @@ public:
 
 	void Update()
 	{
-		time = GetTickCount();
+		time++;
 
-		for(DWORD i = 0; i < numPlayers; i++)
+		for(uint32_t i = 0; i < numPlayers; i++)
 		{
 			DoArrowMove(&player[i], false);
 		}
@@ -367,7 +370,7 @@ public:
 
 	bool IsGameOver()
 	{
-		for(DWORD i = 0; i < numPlayers; i++)
+		for(uint32_t i = 0; i < numPlayers; i++)
 		{
 			if(player[i].IsAlive())
 			{
@@ -381,20 +384,20 @@ public:
 	{
 		float cogX;
 		float cogY;
-		DWORD startX;
-		DWORD endX;
-		DWORD startY;
-		DWORD endY;
+		uint32_t startX;
+		uint32_t endX;
+		uint32_t startY;
+		uint32_t endY;
 		GetCOG(cogX, cogY);
 		map.GetActive(cogX, cogY, startX, startY, endX, endY);
 
 		// update in a grid pattern
-		int gridStep = (time / (1000 / 60)) % 9;
+		int gridStep = time % 9;
 		int gridXOffset = gridStep % 3;
 		int gridYOffset = gridStep / 3;
-		for(DWORD y = startY + gridYOffset; y < endY; y += 3)
+		for(uint32_t y = startY + gridYOffset; y < endY; y += 3)
 		{
-			for(DWORD x = startX + gridXOffset; x < endX; x += 3)
+			for(uint32_t x = startX + gridXOffset; x < endX; x += 3)
 			{
 				MapData d = map.Get(x, y);
 				if(d >= kGhost && d <= kBig)
@@ -403,15 +406,15 @@ public:
 					Direction dir = GetDirectionOfNearestPlayer(x, y);
 					if(dir != kDirNone)
 					{
-						BYTE mx;
-						BYTE my;
+						uint8_t mx;
+						uint8_t my;
 						bool canMove = false;
 						MapData d2;
 						for(int test = 0; test < 3; test++)
 						{
 							const static int kTestDelta[3] = {0,-1,1};
-							mx = (BYTE) x;
-							my = (BYTE) y;
+							mx = (uint8_t) x;
+							my = (uint8_t) y;
 							MoveCoords(mx, my, (dir + kTestDelta[test]) & 7);
 							d2 = map.Get(mx, my);
 							if(d2 == kSpace || d2 >= kPlayer0 && d2 <= kPlayer3)
@@ -455,8 +458,8 @@ public:
 					// Random generator
 					if(getRandom(10) < 3)
 					{
-						BYTE gx = (BYTE) x;
-						BYTE gy = (BYTE) y;
+						uint8_t gx = (uint8_t) x;
+						uint8_t gy = (uint8_t) y;
 						MoveCoords(gx, gy, getRandom(4) * 2);
 						if(map.Get(gx,gy) == kSpace)
 						{
@@ -468,22 +471,22 @@ public:
 		}
 	}
 
-	static DWORD getRandom(DWORD range)
+	static uint32_t getRandom(uint32_t range)
 	{
 		return rand() % range;
 	}
 
-	Direction GetDirectionOfNearestPlayer(DWORD x, DWORD y)
+	Direction GetDirectionOfNearestPlayer(uint32_t x, uint32_t y)
 	{
-		DWORD bestX = 0;
-		DWORD bestY = 0;
-		DWORD bestDistance = 10000;
-		for(DWORD i = 0; i < numPlayers; i++)
+		uint32_t bestX = 0;
+		uint32_t bestY = 0;
+		uint32_t bestDistance = 10000;
+		for(uint32_t i = 0; i < numPlayers; i++)
 		{
 			Player *pP = &player[i];
 			if(pP->IsVisible())
 			{
-				DWORD distance = abs((int) (pP->x - x)) + abs((int) (pP->y - y));
+				uint32_t distance = abs((int) (pP->x - x)) + abs((int) (pP->y - y));
 				if(distance < bestDistance)
 				{
 					bestDistance = distance;
@@ -498,7 +501,7 @@ public:
 		}
 		int dx = bestX - x;
 		int dy = bestY - y;
-		BYTE bitField = 0;
+		uint8_t bitField = 0;
 		if(dy > 0) bitField |= 8;
 		else if(dy < 0) bitField |= 4;
 		if(dx > 0) bitField |= 2;
@@ -508,7 +511,7 @@ public:
 		//     6 + 2 
 		//     5 4 3 
 
-		const static BYTE kDirTable[16] =
+		const static uint8_t kDirTable[16] =
 		{
 			   // YyXx
 			255, // 0000
@@ -537,7 +540,7 @@ public:
 		x = 0.f;
 		y = 0.f;
 		int liveCount = 0;
-		for(DWORD i = 0; i < numPlayers; i++)
+		for(uint32_t i = 0; i < numPlayers; i++)
 		{
 			Player *pP = &player[i];
 			if(pP->IsVisible())
@@ -554,11 +557,11 @@ public:
 		}
 	}
 
-	void LoadLevel(DWORD index)
+	void LoadLevel(uint32_t index)
 	{
 		if(map.LoadLevel(index))
 		{
-			level = (BYTE) index;
+			level = (uint8_t) index;
 		}
 		else
 		{
@@ -570,46 +573,46 @@ public:
 
 	void ChangeLevel(int delta)
 	{
-		DWORD newLevel = min(26, level + delta);
+		uint32_t newLevel = std::min(26, level + delta);
 		LoadLevel(newLevel);
 	}
 
 	void SetPlayerPositions()
 	{
-		BYTE x;
-		BYTE y;
+		uint8_t x;
+		uint8_t y;
 		if(!map.Find(x, y, kUp))
 		{
 			MyDebugBreak();
 			x = 4;
 			y = 4;
 		}
-		for(DWORD i = 0; i < numPlayers; i++)
+		for(uint32_t i = 0; i < numPlayers; i++)
 		{
 			Player* p = &player[i];
 			if(p->IsAlive())
 			{
-				BYTE px = x;
-				BYTE py = y;
+				uint8_t px = x;
+				uint8_t py = y;
 				MoveCoords(px, py, i * 2);
 				PlaceInWorld(i, px, py);
 			}
 		}
 	}
 
-	void PlaceInWorld(DWORD index, DWORD x, DWORD y)
+	void PlaceInWorld(uint32_t index, uint32_t x, uint32_t y)
 	{
 		Player* p = &player[index];
 		MyAssert(p->IsAlive());
-		p->x = (BYTE) x;
-		p->y = (BYTE) y;
+		p->x = (uint8_t) x;
+		p->y = (uint8_t) y;
 		p->dir = (Direction) (index * 2);
 		map.Set(p->x, p->y, (MapData) (kPlayer0 + index));
 		p->state = kNormal;
 		p->arrow.alive = false;
 	}
 
-	void Move(DWORD stick, Direction dir)
+	void Move(uint32_t stick, Direction dir)
 	{
 		if(stick < 4 && dir < 8)
 		{
@@ -617,11 +620,11 @@ public:
 			{
 				Player* p = &player[stick];
 				p->dir = dir;
-				if(p->IsVisible() && time - p->lastMoveTime >= kMsPerMove)
+				if(p->IsVisible() && time - p->lastMoveTime >= FRAMES_PER_MOVE)
 				{
 					p->lastMoveTime = time;
-					BYTE x = p->x;
-					BYTE y = p->y;
+					uint8_t x = p->x;
+					uint8_t y = p->y;
 					MoveCoords(x, y, dir);
 					MapData d = map.Get(x,y);
 					bool bMove = false;
@@ -689,7 +692,7 @@ public:
 		// At least one player in warp, and no players visible
 		bool atLeastOneWarp = false;
 		bool atLeastOneVisible = false;
-		for(DWORD i = 0; i < numPlayers;i++)
+		for(uint32_t i = 0; i < numPlayers;i++)
 		{
 			if(player[i].IsVisible())
 			{
@@ -708,7 +711,7 @@ public:
 		return false;
 	}
 
-	void EatFood(DWORD index)
+	void EatFood(uint32_t index)
 	{
 		if(index < numPlayers)
 		{
@@ -720,7 +723,7 @@ public:
 		}
 	}
 
-	void Fire(DWORD index)
+	void Fire(uint32_t index)
 	{
 		if(index < numPlayers)
 		{
@@ -746,8 +749,8 @@ public:
 		{
 			return;
 		}
-		BYTE x = p->arrow.x;
-		BYTE y = p->arrow.y;
+		uint8_t x = p->arrow.x;
+		uint8_t y = p->arrow.y;
 		if(!isFirstMove)
 		{
 			map.Set(x, y, kSpace);
@@ -773,7 +776,7 @@ public:
 			case kHeart:
 				{
 					bool foundPlayer = false;
-					for(DWORD i = 0; i < numPlayers; i++)
+					for(uint32_t i = 0; i < numPlayers; i++)
 					{
 						Player* p = &player[i];
 						if(!p->IsAlive())
@@ -809,7 +812,7 @@ public:
 		}
 	}
 
-	void UseSmartBomb(DWORD index)
+	void UseSmartBomb(uint32_t index)
 	{
 		if(index < numPlayers)
 		{
@@ -830,15 +833,15 @@ public:
 	{
 		float cogX;
 		float cogY;
-		DWORD startX;
-		DWORD endX;
-		DWORD startY;
-		DWORD endY;
+		uint32_t startX;
+		uint32_t endX;
+		uint32_t startY;
+		uint32_t endY;
 		GetCOG(cogX, cogY);
 		map.GetActive(cogX, cogY, startX, startY, endX, endY);
-		for(DWORD y = startX; y < endY; y++)
+		for(uint32_t y = startX; y < endY; y++)
 		{
-			for(DWORD x = startX; x < endX; x++)
+			for(uint32_t x = startX; x < endX; x++)
 			{
 				MapData d = map.Get(x, y);
 				if(d >= kGhost && d <= kBig || d >= kGen1 && d <= kGen3)
@@ -849,7 +852,7 @@ public:
 		}
 	}
 
-	static void MoveCoords(BYTE& x, BYTE& y, DWORD direction)
+	static void MoveCoords(uint8_t& x, uint8_t& y, uint32_t direction)
 	{
 		if(direction < 8)
 		{
@@ -867,13 +870,13 @@ public:
 		}
 	}
 	Map map;
-	BYTE level;
+	uint8_t level;
 	const static int PlayerCount = 4;
 	Player player[PlayerCount];
-	DWORD numPlayers;
-	DWORD time;
+	uint32_t numPlayers;
+	uint32_t time = 0;
 
-	static const DWORD kMsPerMove = (1000 / 60) * 3;
+	static const uint32_t FRAMES_PER_MOVE = 3;
 };
 
 class GamePad
@@ -893,8 +896,8 @@ public:
 	static const int kB = 32;
 	static const int kC = 64;
 	static const int kD = 128;
-	BYTE buttons;	// bit set if button is currently pressed down
-	BYTE strobe;	// bit set if button is newly pressed down
+	uint8_t buttons; // bit set if button is currently pressed down
+	uint8_t strobe; // bit set if button is newly pressed down
 };
 
 class Keyboard
@@ -902,18 +905,16 @@ class Keyboard
 public:
 	Keyboard()
 	{
-		memset(data,0, sizeof(data));
 	}
-	void HandleEvent(bool down, BYTE key)
+	void HandleEvent(bool down, uint8_t key)
 	{
 		data[key] = down;
 	}
 	static const int KeySize = 256;
-	bool data[KeySize];
-
+	std::map<SDL_Keycode, bool> data;
 };
 
-const DWORD kNumVerts = Map::NumCells * 6;
+const uint32_t kNumVerts = Map::NumCells * 6;
 
 class View
 {
@@ -924,141 +925,41 @@ public:
 
 	void Render(World& world)
 	{
-		// Fill the vertex buffer. We are setting the tu and tv texture
-		// coordinates, which range from 0.0 to 1.0
-		CUSTOMVERTEX* pVertices;
-		if( FAILED( g_pVB->Lock( 0, 0, (void**)&pVertices, 0 ) ) )
-			return;
-
 		float x;
 		float y;
 		world.GetCOG(x, y);
-
-		DWORD numTris = DrawToTexture(world.map, pVertices, kNumVerts, x, y);
-		g_pVB->Unlock();
-
-		// Setup our texture. Using textures introduces the texture stage states,
-		// which govern how textures get blended together (in the case of multiple
-		// textures) and lighting information. In this case, we are modulating
-		// (blending) our texture with the diffuse color of the vertices.
-		static bool firstTime = true;
-		if(firstTime)
-		{
-			firstTime = false;
-			g_pd3dDevice->SetTexture( 0, g_pTexture );
-			g_pd3dDevice->SetTextureStageState( 0, D3DTSS_COLOROP,   D3DTOP_SELECTARG1 );
-			g_pd3dDevice->SetTextureStageState( 0, D3DTSS_COLORARG1, D3DTA_TEXTURE );
-			g_pd3dDevice->SetTextureStageState( 0, D3DTSS_COLORARG2, D3DTA_DIFFUSE );
-			g_pd3dDevice->SetTextureStageState( 0, D3DTSS_ALPHAOP,   D3DTOP_DISABLE );
-		}
-
-		// Render the vertex buffer contents
-		g_pd3dDevice->SetStreamSource( 0, g_pVB, 0, sizeof(CUSTOMVERTEX) );
-		g_pd3dDevice->SetFVF( D3DFVF_CUSTOMVERTEX );
-		g_pd3dDevice->DrawPrimitive( D3DPT_TRIANGLELIST, 0, numTris );
+		DrawToTexture(world.map, x, y);
 	}
 
-	DWORD DrawToTexture(Map& map, CUSTOMVERTEX* pV, DWORD numV, float cogX, float cogY)
+	void DrawToTexture(Map& map, float cogX, float cogY)
 	{
-		const float CellSize = 16.0f;
-		const float uTexelSize = 1.0f / 256.0f;
-		const float vTexelSize = 1.0f / 32.0f;
-		const DWORD uChars = 16;
-		const DWORD vChars = 2;
-		const float uScale = 1.0f / uChars;
-		const float vScale = 1.0f / vChars;
-		const float uBase = 0.0f;
-		const float vBase = 1.0f;
-
-		CUSTOMVERTEX* pTri = pV;
-
-		DWORD startX;
-		DWORD endX;
-		DWORD startY;
-		DWORD endY;
-		map.GetActive(cogX, cogY, startX, startY, endX, endY);
+		uint32_t startX;
+		uint32_t endX;
+		uint32_t startY;
+		uint32_t endY;
 
 		const float xBase = -cogX * 16.f - 0.5f;
 		const float yBase = -cogY * 16.f - 0.5f;
+		const float CellSize = 16.0f;
 
-		DWORD dwNumTris = 0;
-		for(DWORD x = startX; x < endX; x++)
+		map.GetActive(cogX, cogY, startX, startY, endX, endY);
+
+		for (uint32_t x = startX; x < endX; x++)
 		{
-			for(DWORD y = startY; y < endY; y ++)
+			for (uint32_t y = startY; y < endY; y++)
 			{
-				BYTE b = map.Get(x, y);
-				float uLow = (b % uChars) * uScale;
-				float uHigh = uLow + uScale;
-				float vLow = (b / uChars) * vScale;
-				float vHigh = vLow + vScale;
+				uint8_t b = map.Get(x, y);
+				
+				SDL_Rect destRect = {
+					(xBase + x * CellSize) + (16 * 10),
+					(yBase + y * CellSize) + (16 * 6),
+					16,
+					16
+				};
 
-				float xLow = xBase + x * CellSize;
-				float xHigh = xLow + CellSize;
-				float yLow = yBase + y * CellSize;
-				float yHigh = yLow + CellSize;
-
-				// Set the two triangles
-
-				// First triangle
-				pTri->x = xLow;
-				pTri->y = yLow;
-				pTri->z = 0.f;
-				pTri->rhw = 1.0f;
-				pTri->tu = uLow;
-				pTri->tv = vLow;
-
-				pTri++;
-
-				pTri->x = xHigh;
-				pTri->y = yLow;
-				pTri->z = 0.f;
-				pTri->rhw = 1.0f;
-				pTri->tu = uHigh;
-				pTri->tv = vLow;
-
-				pTri++;
-
-				pTri->x = xLow;
-				pTri->y = yHigh;
-				pTri->z = 0.f;
-				pTri->rhw = 1.0f;
-				pTri->tu = uLow;
-				pTri->tv = vHigh;
-
-				// Second triangle
-				pTri++;
-
-				pTri->x = xLow;
-				pTri->y = yHigh;
-				pTri->z = 0.f;
-				pTri->rhw = 1.0f;
-				pTri->tu = uLow;
-				pTri->tv = vHigh;
-
-				pTri++;
-
-				pTri->x = xHigh;
-				pTri->y = yLow;
-				pTri->z = 0.f;
-				pTri->rhw = 1.0f;
-				pTri->tu = uHigh;
-				pTri->tv = vLow;
-
-				pTri++;
-
-				pTri->x = xHigh;
-				pTri->y = yHigh;
-				pTri->z = 0.f;
-				pTri->rhw = 1.0f;
-				pTri->tu = uHigh;
-				pTri->tv = vHigh;
-
-				pTri++;
-
-				dwNumTris += 2;
+				SDL_RenderCopy(gRenderer, gTexture, &gTileClips[b], &destRect);
 			}
 		}
-		return dwNumTris;
 	}
 };
 
@@ -1085,7 +986,7 @@ public:
 		view.Render(world);
 	}
 
-	void HandleEvent(bool down, UCHAR key)
+	void HandleEvent(bool down, SDL_Keycode key)
 	{
 		keyboard.HandleEvent(down, key);
 	}
@@ -1093,31 +994,31 @@ public:
 	void TranslateKeysToPads()
 	{
 		struct PadMapEntry {
-			UCHAR vkcode;
-			BYTE pad;
-			BYTE mask;
+			SDL_Keycode vkcode;
+			uint8_t pad;
+			uint8_t mask;
 		};
 		PadMapEntry map[] = {
 			// ASDW
-			{'A', 0, GamePad::kLeft},
-			{'S', 0, GamePad::kDown},
-			{'D', 0, GamePad::kRight},
-			{'W', 0, GamePad::kUp},
-			{VK_SPACE, 0, GamePad::kA},
-			{'1', 0, GamePad::kB},
-			{VK_F1, 0, GamePad::kC},
+			{SDLK_a, 0, GamePad::kLeft},
+			{SDLK_s, 0, GamePad::kDown},
+			{SDLK_d, 0, GamePad::kRight},
+			{SDLK_w, 0, GamePad::kUp},
+			{SDLK_SPACE, 0, GamePad::kA},
+			{SDLK_1, 0, GamePad::kB},
+			{SDLK_2, 0, GamePad::kC},
 
-			{VK_F11, 0, GamePad::kD}, // For development go down to next level
+			{SDLK_9, 0, GamePad::kD}, // For development go down to next level
 
 			// Number pad
-			{VK_NUMPAD4, 1, GamePad::kLeft},
-			{VK_NUMPAD5, 1, GamePad::kDown},
-			{VK_NUMPAD6, 1, GamePad::kRight},
-			{VK_NUMPAD8, 1, GamePad::kUp},
-			{VK_NUMPAD0, 1, GamePad::kA},
-			{'2', 1, GamePad::kB},
-			{VK_F2, 1, GamePad::kC},
-			{0, 0, 0}
+			{SDLK_KP_4, 1, GamePad::kLeft},
+			{SDLK_KP_5, 1, GamePad::kDown},
+			{SDLK_KP_6, 1, GamePad::kRight},
+			{SDLK_KP_8, 1, GamePad::kUp},
+			{SDLK_KP_0, 1, GamePad::kA},
+			{SDLK_KP_7, 1, GamePad::kB},
+			{SDLK_KP_9, 1, GamePad::kC},
+			{SDLK_UNKNOWN, 0, 0}
 		};
 
 		// Reset all pads
@@ -1153,7 +1054,7 @@ public:
 
 	void MovePlayers()
 	{
-		for(DWORD i = 0; i < world.numPlayers; i++)
+		for(uint32_t i = 0; i < world.numPlayers; i++)
 		{
 			GamePad* pPad = & gamepad[i];
 			static Direction kPadToDir[] =
@@ -1215,193 +1116,170 @@ public:
 
 Game gGame;
 
-
-
-//-----------------------------------------------------------------------------
-// Name: InitD3D()
-// Desc: Initializes Direct3D
-//-----------------------------------------------------------------------------
-HRESULT InitD3D( HWND hWnd )
+static bool init()
 {
-    // Create the D3D object.
-    if( NULL == ( g_pD3D = Direct3DCreate9( D3D_SDK_VERSION ) ) )
-        return E_FAIL;
+	if (SDL_Init(SDL_INIT_VIDEO) < 0)
+	{
+		printf("Failed to initialize SDL.  SDL error: %s\n", SDL_GetError());
+		return false;
+	}
 
-    // Set up the structure used to create the D3DDevice. Since we are now
-    // using more complex geometry, we will create a device with a zbuffer.
-    D3DPRESENT_PARAMETERS d3dpp;
-    ZeroMemory( &d3dpp, sizeof(d3dpp) );
-    d3dpp.Windowed = TRUE;
-    d3dpp.SwapEffect = D3DSWAPEFFECT_DISCARD;
-    d3dpp.BackBufferFormat = D3DFMT_UNKNOWN;
-    d3dpp.EnableAutoDepthStencil = TRUE;
-    d3dpp.AutoDepthStencilFormat = D3DFMT_D16;
+	gWindow = SDL_CreateWindow("Dandy Dungeon", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, SCREEN_WIDTH, SCREEN_HEIGHT, SDL_WINDOW_SHOWN);
+	if (gWindow == nullptr)
+	{
+		printf("Window could not be created.  SDL error: %s\n", SDL_GetError());
+		return false;
+	}
 
-    // Create the D3DDevice
-    if( FAILED( g_pD3D->CreateDevice( D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, hWnd,
-                                      D3DCREATE_SOFTWARE_VERTEXPROCESSING,
-                                      &d3dpp, &g_pd3dDevice ) ) )
-    {
-        return E_FAIL;
-    }
+	gRenderer = SDL_CreateRenderer(gWindow, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+	if (gRenderer == nullptr)
+	{
+		printf("Renderer could not be created.  SDL error: %s\n", SDL_GetError());
+		return false;
+	}
 
-    // Turn off culling
-    g_pd3dDevice->SetRenderState( D3DRS_CULLMODE, D3DCULL_NONE );
+	// 16x16 = size of tiles in dandy.bmp
+	if (SDL_RenderSetLogicalSize(gRenderer, 16 * 20 + 6, 16 * 10 + 34) < 0)
+	{
+		printf("Failed to set logical size.  SDL error: %s\n", SDL_GetError());
+		return false;
+	}
 
-    // Turn off D3D lighting
-    g_pd3dDevice->SetRenderState( D3DRS_LIGHTING, FALSE );
+	SDL_SetRenderDrawColor(gRenderer, 0xFF, 0xFF, 0xFF, 0xFF);
 
-    // Turn on the zbuffer
-    g_pd3dDevice->SetRenderState( D3DRS_ZENABLE, TRUE );
+	int imgFlags = IMG_INIT_PNG;
+	if (!(IMG_Init(imgFlags) & imgFlags))
+	{
+		printf("Failed to initialize SDL_image.  SDL_image error: %s\n", IMG_GetError());
+		return false;
+	}
 
-    return S_OK;
+	gGame.Start();
+
+	return true;
 }
 
-//-----------------------------------------------------------------------------
-// Name: InitGeometry()
-// Desc: Create the textures and vertex buffers
-//-----------------------------------------------------------------------------
-HRESULT InitGeometry()
+static bool loadMedia()
 {
-    // Use D3DX to create a texture from a file based image
-    if( FAILED( D3DXCreateTextureFromFile( g_pd3dDevice, "Dandy.bmp", &g_pTexture ) ) )
-    {
-        // If texture is not in current folder, try parent folder
-        if( FAILED( D3DXCreateTextureFromFile( g_pd3dDevice, "..\\Dandy.bmp", &g_pTexture ) ) )
-        {
-            MessageBox(NULL, "Could not find Dandy.bmp", "Dandy.exe", MB_OK);
-            return E_FAIL;
-        }
-    }
+	SDL_Surface* loadedSurface = IMG_Load("dandy.bmp");
+	SDL_Texture* texture = nullptr;
+	if (loadedSurface == nullptr)
+	{
+		printf("Failed to load image.  SDL_image error: %s\n", IMG_GetError());
+		return false;
+	}
 
-    // Create the vertex buffer.
-    if( FAILED( g_pd3dDevice->CreateVertexBuffer( kNumVerts*sizeof(CUSTOMVERTEX),
-                                                  D3DUSAGE_WRITEONLY, D3DFVF_CUSTOMVERTEX,
-                                                  D3DPOOL_DEFAULT, &g_pVB, NULL ) ) )
-    {
-        return E_FAIL;
-    }
+	SDL_SetColorKey(loadedSurface, SDL_TRUE, SDL_MapRGB(loadedSurface->format, 0, 0xFF, 0xFF));
+	texture = SDL_CreateTextureFromSurface(gRenderer, loadedSurface);
+	if (texture == nullptr)
+	{
+		printf("Failed to create texture.  SDL error: %s\n", SDL_GetError());
+		return false;
+	}
 
-	return S_OK;
+	uint32_t x = 0;
+	uint32_t y = 0;
+	for (uint32_t i = 0; i < MAP_DATA_COUNT; i++)
+	{
+		if (x == 256)
+		{
+			x = 0;
+			y = 16;
+		}
+
+		gTileClips[i].x = x;
+		gTileClips[i].y = y;
+		gTileClips[i].w = 16;
+		gTileClips[i].h = 16;
+		x += 16;
+	}
+
+	SDL_FreeSurface(loadedSurface);
+	gTexture = texture;
+	return (gTexture != nullptr);
 }
 
-
-//-----------------------------------------------------------------------------
-// Name: Cleanup()
-// Desc: Releases all previously initialized objects
-//-----------------------------------------------------------------------------
-VOID Cleanup()
+static void close()
 {
-    if( g_pTexture != NULL )
-        g_pTexture->Release();
+	if (gTexture != nullptr)
+	{
+		SDL_DestroyTexture(gTexture);
+		gTexture = nullptr;
+	}
 
-    if( g_pVB != NULL )
-        g_pVB->Release();
+	SDL_DestroyRenderer(gRenderer);
+	gRenderer = nullptr;
 
-    if( g_pd3dDevice != NULL )
-        g_pd3dDevice->Release();
+	SDL_DestroyWindow(gWindow);
+	gWindow = nullptr;
 
-    if( g_pD3D != NULL )
-        g_pD3D->Release();
+	IMG_Quit();
+	SDL_Quit();
 }
 
-
-//-----------------------------------------------------------------------------
-// Name: Render()
-// Desc: Draws the scene
-//-----------------------------------------------------------------------------
-VOID Render()
+void loop_handler(void*)
 {
-    // Clear the backbuffer and the zbuffer
-    g_pd3dDevice->Clear( 0, NULL, D3DCLEAR_TARGET|D3DCLEAR_ZBUFFER,
-                         D3DCOLOR_XRGB(0,0,255), 1.0f, 0 );
+	SDL_Event e;
+	while (SDL_PollEvent(&e) != 0)
+	{
+		if (e.type == SDL_QUIT)
+		{
+			gQuit = true;
+		}
+		else if (e.type == SDL_KEYDOWN)
+		{
+			if (e.key.keysym.sym == SDLK_ESCAPE)
+			{
+				gQuit = true;
+			}
+			gGame.HandleEvent(true, e.key.keysym.sym);
+		}
+		else if (e.type == SDL_KEYUP)
+		{
+			gGame.HandleEvent(false, e.key.keysym.sym);
+		}
+	}
 
-    // Begin the scene
-    if( SUCCEEDED( g_pd3dDevice->BeginScene() ) )
-    {
-		gGame.Render();
-        // End the scene
-        g_pd3dDevice->EndScene();
-    }
+	gGame.Step();
 
-    // Present the backbuffer contents to the display
-    g_pd3dDevice->Present( NULL, NULL, NULL, NULL );
+	SDL_SetRenderDrawColor(gRenderer, 0xFF, 0xFF, 0xFF, 0xFF);
+	SDL_RenderClear(gRenderer);
+
+	gGame.Render();
+
+	SDL_RenderPresent(gRenderer);
 }
 
-
-
-
-//-----------------------------------------------------------------------------
-// Name: MsgProc()
-// Desc: The window's message handler
-//-----------------------------------------------------------------------------
-LRESULT WINAPI MsgProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
+int main(int argc, char* args[])
 {
-    switch( msg )
-    {
-	case WM_KEYDOWN:
-		gGame.HandleEvent(true, (BYTE) wParam);
-		return 0;
-	case WM_KEYUP:
-		gGame.HandleEvent(false, (BYTE) wParam);
-		return 0;
-    case WM_DESTROY:
-        Cleanup();
-        PostQuitMessage( 0 );
-        return 0;
-    }
+	if (!init())
+	{
+		printf("Failed to initialize.\n");
+		return EXIT_FAILURE;
+	}
 
-    return DefWindowProc( hWnd, msg, wParam, lParam );
-}
+	if (!loadMedia())
+	{
+		printf("Failed to load media.\n");
+		return EXIT_FAILURE;
+	}
 
+	unsigned int a = SDL_GetTicks();
+	unsigned int b = SDL_GetTicks();
+	double delta = 0;
 
-//-----------------------------------------------------------------------------
-// Name: WinMain()
-// Desc: The application's entry point
-//-----------------------------------------------------------------------------
-INT WINAPI WinMain( HINSTANCE hInst, HINSTANCE, LPSTR, INT )
-{
-    // Register the window class
-    WNDCLASSEX wc = { sizeof(WNDCLASSEX), CS_CLASSDC, MsgProc, 0L, 0L,
-                      GetModuleHandle(NULL), NULL, NULL, NULL, NULL,
-                      "Dandy", NULL };
-    RegisterClassEx( &wc );
+	while (!gQuit)
+	{
+		a = SDL_GetTicks();
+		delta = a - b;
 
-    // Create the application's window
-    HWND hWnd = CreateWindow( "Dandy", "Dandy Dungeon",
-		WS_OVERLAPPEDWINDOW, 100, 100, 16*20 + 6, 16*10 + 34,
-                              GetDesktopWindow(), NULL, wc.hInstance, NULL );
+		if (delta > 1000 / 30.0)
+		{
+			b = a;
+			loop_handler(NULL);
+		}
+	}
 
-    // Initialize Direct3D
-    if( SUCCEEDED( InitD3D( hWnd ) ) )
-    {
-		gGame.Start();
-        // Create the scene geometry
-        if( SUCCEEDED( InitGeometry() ) )
-        {
-            // Show the window
-            ShowWindow( hWnd, SW_SHOWDEFAULT );
-            UpdateWindow( hWnd );
-
-            // Enter the message loop
-            MSG msg;
-            ZeroMemory( &msg, sizeof(msg) );
-            while( msg.message!=WM_QUIT )
-            {
-                if( PeekMessage( &msg, NULL, 0U, 0U, PM_REMOVE ) )
-                {
-                    TranslateMessage( &msg );
-                    DispatchMessage( &msg );
-                }
-                else
-				{
-					gGame.Step();
-                    Render();
-				}
-            }
-        }
-    }
-
-    UnregisterClass( "Dandy", wc.hInstance );
-    return 0;
+	close();
+	return 0;
 }
